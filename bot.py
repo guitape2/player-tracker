@@ -13,6 +13,8 @@ client = discord.Client(intents=intents)
 
 trackers = {}
 previously_online = set()
+hourly_subscribers = []  # [(user_id, channel_id)]
+players_this_hour = set()
 
 async def get_players():
     try:
@@ -25,13 +27,19 @@ async def get_players():
         return set(), 0
 
 async def monitor_loop():
-    global previously_online
+    global previously_online, players_this_hour
     await client.wait_until_ready()
+    hour_counter = 0
+
     while not client.is_closed():
         current_players, count = await get_players()
 
         new_players = current_players - previously_online
 
+        # Ajoute les nouveaux joueurs au compteur horaire
+        players_this_hour.update(new_players)
+
+        # Tracker joueurs
         for player in new_players:
             for key, entries in trackers.items():
                 if player.lower() == key:
@@ -44,6 +52,21 @@ async def monitor_loop():
                             )
 
         previously_online = current_players
+        hour_counter += 1
+
+        # Toutes les heures (120 x 30s = 3600s)
+        if hour_counter >= 120:
+            hour_counter = 0
+            nb = len(players_this_hour)
+            liste = ", ".join(f"**{p}**" for p in sorted(players_this_hour)) if players_this_hour else "aucun"
+            for (user_id, channel_id) in hourly_subscribers:
+                channel = client.get_channel(channel_id)
+                if channel:
+                    await channel.send(
+                        f"<@{user_id}> Rapport horaire : **{nb}** joueur(s) connecté(s) cette heure → {liste}"
+                    )
+            players_this_hour = set()
+
         await asyncio.sleep(30)
 
 @client.event
@@ -98,5 +121,21 @@ async def on_message(message):
             await message.channel.send("Tes alertes actives : " + ", ".join(f"**{p}**" for p in actifs))
         else:
             await message.channel.send("Tu n'as aucune alerte active.")
+
+    elif content == "!rapport":
+        entry = (message.author.id, message.channel.id)
+        if entry not in hourly_subscribers:
+            hourly_subscribers.append(entry)
+            await message.channel.send("Tu recevras un rapport toutes les heures.")
+        else:
+            await message.channel.send("Tu es déjà abonné au rapport horaire.")
+
+    elif content == "!stoprapport":
+        entry = (message.author.id, message.channel.id)
+        if entry in hourly_subscribers:
+            hourly_subscribers.remove(entry)
+            await message.channel.send("Rapport horaire désactivé.")
+        else:
+            await message.channel.send("Tu n'étais pas abonné.")
 
 client.run(TOKEN)
