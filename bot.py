@@ -11,7 +11,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# { "pseudo_lower": [(user_id, channel_id), ...] }
 trackers = {}
 previously_online = set()
 
@@ -31,23 +30,21 @@ async def monitor_loop():
     while not client.is_closed():
         current_players, count = await get_players()
 
-        # Joueurs qui viennent de se connecter
         new_players = current_players - previously_online
 
         for player in new_players:
-            player_lower = player.lower()
-            if player_lower in trackers:
-                for (user_id, channel_id) in trackers[player_lower]:
-                    channel = client.get_channel(channel_id)
-                    user = client.get_user(user_id)
-                    if channel and user:
-                        await channel.send(
-                            f"<@{user_id}> **{player}** vient de se connecter sur le serveur ! "
-                            f"({count} joueur(s) en ligne)"
-                        )
+            for key, entries in trackers.items():
+                if player.lower() == key:
+                    for (user_id, channel_id) in entries:
+                        channel = client.get_channel(channel_id)
+                        if channel:
+                            await channel.send(
+                                f"<@{user_id}> **{player}** vient de se connecter ! "
+                                f"({count} joueur(s) en ligne)"
+                            )
 
         previously_online = current_players
-        await asyncio.sleep(30)  # vérifie toutes les 30 secondes
+        await asyncio.sleep(30)
 
 @client.event
 async def on_ready():
@@ -83,7 +80,7 @@ async def on_message(message):
         if entry not in trackers[key]:
             trackers[key].append(entry)
         await message.channel.send(
-            f"Tu seras ping quand **{pseudo}** se connecte."
+            f"Tu seras pingé quand **{pseudo}** se connecte."
         )
 
     elif content.startswith("!untrack "):
