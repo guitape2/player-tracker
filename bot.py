@@ -1,6 +1,7 @@
 import discord
 import asyncio
 import os
+import time
 from mcstatus import JavaServer
 
 TOKEN = os.environ["DISCORD_TOKEN"]
@@ -13,7 +14,7 @@ client = discord.Client(intents=intents)
 
 trackers = {}
 previously_online = set()
-hourly_subscribers = []  # [(user_id, channel_id)]
+hourly_subscribers = []
 players_this_hour = set()
 
 async def get_players():
@@ -29,17 +30,14 @@ async def get_players():
 async def monitor_loop():
     global previously_online, players_this_hour
     await client.wait_until_ready()
-    hour_counter = 0
+    last_hour_report = time.time()
 
     while not client.is_closed():
         current_players, count = await get_players()
-
         new_players = current_players - previously_online
 
-        # Ajoute les nouveaux joueurs au compteur horaire
         players_this_hour.update(new_players)
 
-        # Tracker joueurs
         for player in new_players:
             for key, entries in trackers.items():
                 if player.lower() == key:
@@ -52,11 +50,9 @@ async def monitor_loop():
                             )
 
         previously_online = current_players
-        hour_counter += 1
 
-        # Toutes les heures (120 x 30s = 3600s)
-        if hour_counter >= 120:
-            hour_counter = 0
+        if time.time() - last_hour_report >= 3600:
+            last_hour_report = time.time()
             nb = len(players_this_hour)
             liste = ", ".join(f"**{p}**" for p in sorted(players_this_hour)) if players_this_hour else "aucun"
             for (user_id, channel_id) in hourly_subscribers:
@@ -102,17 +98,13 @@ async def on_message(message):
         entry = (message.author.id, message.channel.id)
         if entry not in trackers[key]:
             trackers[key].append(entry)
-        await message.channel.send(
-            f"Tu seras pingé quand **{pseudo}** se connecte."
-        )
+        await message.channel.send(f"Tu seras pingé quand **{pseudo}** se connecte.")
 
     elif content.startswith("!untrack "):
         pseudo = content[9:].strip()
         key = pseudo.lower()
         if key in trackers:
-            trackers[key] = [
-                e for e in trackers[key] if e[0] != message.author.id
-            ]
+            trackers[key] = [e for e in trackers[key] if e[0] != message.author.id]
         await message.channel.send(f"Alerte désactivée pour **{pseudo}**.")
 
     elif content == "!trackers":
