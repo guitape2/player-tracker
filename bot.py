@@ -21,7 +21,7 @@ CHANNEL_JOUEURS_SURVEILLES = 1499796600728326436
 CHANNEL_STATISTIQUES = 1499796592188854292
 CHANNEL_GRAPHIQUES = 1500582748770009108
 
-SAVE_FILE = "data.json"
+SAVE_FILE = "/data/data.json"
 
 intents = discord.Intents.default()
 intents.message_content = True
