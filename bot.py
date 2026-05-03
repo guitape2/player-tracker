@@ -3,6 +3,10 @@ import asyncio
 import os
 import time
 import json
+import io
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 from mcstatus import JavaServer
 from collections import defaultdict
 
@@ -25,7 +29,6 @@ client = discord.Client(intents=intents)
 
 previously_online = set()
 session_start = {}
-
 trackers = {}
 hourly_subscribers = []
 players_this_hour = set()
@@ -81,60 +84,104 @@ def format_duree(secondes):
     else:
         return f"{s}s"
 
-def generer_barchart_ascii(data, titre, max_width=20):
-    if not data:
-        return f"**{titre}**\nAucune donnée"
-    max_val = max(data.values())
-    lignes = [f"**{titre}**"]
-    for label, val in sorted(data.items(), key=lambda x: x[1], reverse=True):
-        if max_val > 0:
-            barre = "█" * int((val / max_val) * max_width)
-        else:
-            barre = ""
-        lignes.append(f"`{str(label).rjust(10)}` {barre} {val}")
-    return "\n".join(lignes)
+def generer_graphiques():
+    fichiers = []
+    couleur_principale = "#5865F2"
+    couleur_secondaire = "#3BA55C"
+    couleur_temps = "#FAA61A"
+    bg = "#2C2F33"
+    bg2 = "#23272A"
+    text_color = "#DCDDDE"
+
+    plt.rcParams.update({
+        'figure.facecolor': bg,
+        'axes.facecolor': bg2,
+        'axes.edgecolor': '#40444B',
+        'axes.labelcolor': text_color,
+        'xtick.color': text_color,
+        'ytick.color': text_color,
+        'text.color': text_color,
+        'grid.color': '#40444B',
+        'grid.linewidth': 0.5,
+    })
+
+    # Graphique 1 : connexions par joueur
+    if connexions_par_joueur:
+        top = sorted(connexions_par_joueur.items(), key=lambda x: x[1], reverse=True)[:10]
+        noms, vals = zip(*top)
+        fig, ax = plt.subplots(figsize=(10, 5))
+        bars = ax.barh(noms, vals, color=couleur_principale, height=0.6)
+        for bar, val in zip(bars, vals):
+            ax.text(bar.get_width() + 0.05, bar.get_y() + bar.get_height()/2,
+                    str(val), va='center', fontsize=11, color=text_color)
+        ax.set_xlabel("Connexions")
+        ax.set_title("Connexions par joueur", fontsize=14, fontweight='bold', pad=15)
+        ax.invert_yaxis()
+        ax.grid(axis='x', alpha=0.3)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        plt.tight_layout()
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=120, bbox_inches='tight')
+        buf.seek(0)
+        fichiers.append(("connexions_joueurs.png", buf))
+        plt.close()
+
+    # Graphique 2 : temps de jeu par joueur
+    if temps_total_par_joueur:
+        top_temps = sorted(temps_total_par_joueur.items(), key=lambda x: x[1], reverse=True)[:10]
+        noms, vals = zip(*top_temps)
+        vals_heures = [v / 3600 for v in vals]
+        labels = [format_duree(v) for v in vals]
+        fig, ax = plt.subplots(figsize=(10, 5))
+        bars = ax.barh(noms, vals_heures, color=couleur_temps, height=0.6)
+        for bar, label in zip(bars, labels):
+            ax.text(bar.get_width() + 0.01, bar.get_y() + bar.get_height()/2,
+                    label, va='center', fontsize=11, color=text_color)
+        ax.set_xlabel("Heures de jeu")
+        ax.set_title("Temps de jeu par joueur", fontsize=14, fontweight='bold', pad=15)
+        ax.invert_yaxis()
+        ax.grid(axis='x', alpha=0.3)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        plt.tight_layout()
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=120, bbox_inches='tight')
+        buf.seek(0)
+        fichiers.append(("temps_jeu.png", buf))
+        plt.close()
+
+    # Graphique 3 : activité par heure
+    heures = list(range(24))
+    vals = [connexions_par_heure.get(h, 0) for h in heures]
+    labels_h = [f"{str(h).zfill(2)}h" for h in heures]
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.fill_between(heures, vals, alpha=0.3, color=couleur_secondaire)
+    ax.plot(heures, vals, color=couleur_secondaire, linewidth=2.5, marker='o', markersize=5)
+    ax.set_xticks(heures)
+    ax.set_xticklabels(labels_h, rotation=45, fontsize=9)
+    ax.set_ylabel("Connexions")
+    ax.set_title("Activité par heure de la journée", fontsize=14, fontweight='bold', pad=15)
+    ax.grid(axis='y', alpha=0.3)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=120, bbox_inches='tight')
+    buf.seek(0)
+    fichiers.append(("activite_heures.png", buf))
+    plt.close()
+
+    return fichiers
 
 async def envoyer_graphiques():
     channel = client.get_channel(CHANNEL_GRAPHIQUES)
     if not channel:
         return
-
-    await channel.send("📊 **Graphiques des statistiques**\n─────────────────────")
-
-    # Graphique 1 : connexions par joueur
-    if connexions_par_joueur:
-        top = dict(sorted(connexions_par_joueur.items(), key=lambda x: x[1], reverse=True)[:10])
-        msg = generer_barchart_ascii(top, "Connexions par joueur")
-        await channel.send(msg)
-    else:
-        await channel.send("**Connexions par joueur**\nAucune donnée")
-
-    # Graphique 2 : temps de jeu par joueur
-    if temps_total_par_joueur:
-        top_temps = dict(sorted(temps_total_par_joueur.items(), key=lambda x: x[1], reverse=True)[:10])
-        max_val = max(top_temps.values())
-        lignes = ["**Temps de jeu par joueur**"]
-        for p, t in top_temps.items():
-            barre = "█" * int((t / max_val) * 20) if max_val > 0 else ""
-            lignes.append(f"`{p.rjust(10)}` {barre} {format_duree(t)}")
-        await channel.send("\n".join(lignes))
-    else:
-        await channel.send("**Temps de jeu par joueur**\nAucune donnée")
-
-    # Graphique 3 : activité par heure
-    if connexions_par_heure:
-        heures_completes = {h: connexions_par_heure.get(h, 0) for h in range(24)}
-        max_val = max(heures_completes.values()) if heures_completes else 1
-        lignes = ["**Activité par heure de la journée**"]
-        for h in range(24):
-            val = heures_completes[h]
-            barre = "█" * int((val / max_val) * 20) if max_val > 0 else ""
-            lignes.append(f"`{str(h).zfill(2)}h` {barre} {val}")
-        await channel.send("\n".join(lignes))
-    else:
-        await channel.send("**Activité par heure**\nAucune donnée")
-
-    await channel.send("─────────────────────")
+    fichiers = await asyncio.to_thread(generer_graphiques)
+    await channel.send("📊 **Graphiques des statistiques**")
+    for nom, buf in fichiers:
+        await channel.send(file=discord.File(buf, filename=nom))
 
 async def envoyer_stats_quotidiennes():
     channel_stats = client.get_channel(CHANNEL_STATISTIQUES)
