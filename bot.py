@@ -15,6 +15,7 @@ CHANNEL_RAPPORTS = 1499796588200198286
 CHANNEL_COMMANDES = 1499796590112538874
 CHANNEL_JOUEURS_SURVEILLES = 1499796600728326436
 CHANNEL_STATISTIQUES = 1499796592188854292
+CHANNEL_GRAPHIQUES = 1500582748770009108
 
 SAVE_FILE = "data.json"
 
@@ -80,6 +81,61 @@ def format_duree(secondes):
     else:
         return f"{s}s"
 
+def generer_barchart_ascii(data, titre, max_width=20):
+    if not data:
+        return f"**{titre}**\nAucune donnée"
+    max_val = max(data.values())
+    lignes = [f"**{titre}**"]
+    for label, val in sorted(data.items(), key=lambda x: x[1], reverse=True):
+        if max_val > 0:
+            barre = "█" * int((val / max_val) * max_width)
+        else:
+            barre = ""
+        lignes.append(f"`{str(label).rjust(10)}` {barre} {val}")
+    return "\n".join(lignes)
+
+async def envoyer_graphiques():
+    channel = client.get_channel(CHANNEL_GRAPHIQUES)
+    if not channel:
+        return
+
+    await channel.send("📊 **Graphiques des statistiques**\n─────────────────────")
+
+    # Graphique 1 : connexions par joueur
+    if connexions_par_joueur:
+        top = dict(sorted(connexions_par_joueur.items(), key=lambda x: x[1], reverse=True)[:10])
+        msg = generer_barchart_ascii(top, "Connexions par joueur")
+        await channel.send(msg)
+    else:
+        await channel.send("**Connexions par joueur**\nAucune donnée")
+
+    # Graphique 2 : temps de jeu par joueur
+    if temps_total_par_joueur:
+        top_temps = dict(sorted(temps_total_par_joueur.items(), key=lambda x: x[1], reverse=True)[:10])
+        max_val = max(top_temps.values())
+        lignes = ["**Temps de jeu par joueur**"]
+        for p, t in top_temps.items():
+            barre = "█" * int((t / max_val) * 20) if max_val > 0 else ""
+            lignes.append(f"`{p.rjust(10)}` {barre} {format_duree(t)}")
+        await channel.send("\n".join(lignes))
+    else:
+        await channel.send("**Temps de jeu par joueur**\nAucune donnée")
+
+    # Graphique 3 : activité par heure
+    if connexions_par_heure:
+        heures_completes = {h: connexions_par_heure.get(h, 0) for h in range(24)}
+        max_val = max(heures_completes.values()) if heures_completes else 1
+        lignes = ["**Activité par heure de la journée**"]
+        for h in range(24):
+            val = heures_completes[h]
+            barre = "█" * int((val / max_val) * 20) if max_val > 0 else ""
+            lignes.append(f"`{str(h).zfill(2)}h` {barre} {val}")
+        await channel.send("\n".join(lignes))
+    else:
+        await channel.send("**Activité par heure**\nAucune donnée")
+
+    await channel.send("─────────────────────")
+
 async def envoyer_stats_quotidiennes():
     channel_stats = client.get_channel(CHANNEL_STATISTIQUES)
     if not channel_stats:
@@ -112,6 +168,7 @@ async def envoyer_stats_quotidiennes():
     embed.add_field(name="Total connexions aujourd'hui", value=f"**{total}** connexion(s)", inline=False)
 
     await channel_stats.send(embed=embed)
+    await envoyer_graphiques()
 
     connexions_par_joueur.clear()
     connexions_par_heure.clear()
@@ -269,6 +326,10 @@ async def on_message(message):
         await envoyer_stats_quotidiennes()
         await channel_commandes.send("Stats envoyées dans #statistiques !")
 
+    elif content == "!graphique":
+        await envoyer_graphiques()
+        await channel_commandes.send("Graphiques envoyés dans #graphiques !")
+
     elif content == "!aide":
         aide = (
             "**Commandes disponibles :**\n"
@@ -278,7 +339,8 @@ async def on_message(message):
             "`!trackers` → voir tes alertes actives\n"
             "`!rapport` → activer le rapport horaire\n"
             "`!stoprapport` → désactiver le rapport horaire\n"
-            "`!stats` → voir les stats maintenant dans #statistiques"
+            "`!stats` → envoyer le rapport quotidien dans #statistiques\n"
+            "`!graphique` → envoyer les graphiques dans #graphiques"
         )
         await channel_commandes.send(aide)
 
