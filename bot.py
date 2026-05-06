@@ -11,38 +11,66 @@ from mcstatus import JavaServer
 from collections import defaultdict
 
 TOKEN = os.environ["DISCORD_TOKEN"]
-MC_HOST = os.environ["MC_HOST"]
-MC_PORT = int(os.environ.get("MC_PORT", 25565))
-
-CHANNEL_ALERTES = 1499796586014707885
-CHANNEL_RAPPORTS = 1499796588200198286
-CHANNEL_COMMANDES = 1499796590112538874
-CHANNEL_JOUEURS_SURVEILLES = 1499796600728326436
-CHANNEL_STATISTIQUES = 1499796592188854292
-CHANNEL_GRAPHIQUES = 1500582748770009108
-
 SAVE_FILE = "/data/data.json"
+
+SERVEURS = {
+    "cobblemon": {
+        "host": os.environ["MC_HOST"],
+        "port": int(os.environ.get("MC_PORT", 25565)),
+        "channels": {
+            "alertes": 1499796586014707885,
+            "rapports": 1499796588200198286,
+            "statistiques": 1499796592188854292,
+            "graphiques": 1500582748770009108,
+            "joueurs_surveilles": 1499796600728326436,
+        }
+    },
+    "lego974": {
+        "host": "Lego974.aternos.me",
+        "port": 48072,
+        "channels": {
+            "alertes": 1501560779621793903,
+            "rapports": 1501560819669012490,
+            "statistiques": 1501561000892305509,
+            "graphiques": 1501561081150177381,
+            "joueurs_surveilles": None,
+        }
+    }
+}
+
+CHANNEL_COMMANDES = 1499796590112538874
 
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-previously_online = set()
-session_start = {}
+states = {
+    nom: {
+        "previously_online": set(),
+        "session_start": {},
+        "players_this_hour": set(),
+        "connexions_par_joueur": defaultdict(int),
+        "connexions_par_heure": defaultdict(int),
+        "temps_total_par_joueur": defaultdict(float),
+    }
+    for nom in SERVEURS
+}
+
 trackers = {}
 hourly_subscribers = []
-players_this_hour = set()
-connexions_par_joueur = defaultdict(int)
-connexions_par_heure = defaultdict(int)
-temps_total_par_joueur = defaultdict(float)
 
 def sauvegarder():
     data = {
         "trackers": {k: v for k, v in trackers.items()},
         "hourly_subscribers": hourly_subscribers,
-        "connexions_par_joueur": dict(connexions_par_joueur),
-        "connexions_par_heure": {str(k): v for k, v in connexions_par_heure.items()},
-        "temps_total_par_joueur": dict(temps_total_par_joueur),
+        "states": {
+            nom: {
+                "connexions_par_joueur": dict(s["connexions_par_joueur"]),
+                "connexions_par_heure": {str(k): v for k, v in s["connexions_par_heure"].items()},
+                "temps_total_par_joueur": dict(s["temps_total_par_joueur"]),
+            }
+            for nom, s in states.items()
+        }
     }
     with open(SAVE_FILE, "w") as f:
         json.dump(data, f)
@@ -55,16 +83,18 @@ def charger():
         data = json.load(f)
     trackers = {k: [tuple(e) for e in v] for k, v in data.get("trackers", {}).items()}
     hourly_subscribers = [tuple(e) for e in data.get("hourly_subscribers", [])]
-    for k, v in data.get("connexions_par_joueur", {}).items():
-        connexions_par_joueur[k] = v
-    for k, v in data.get("connexions_par_heure", {}).items():
-        connexions_par_heure[int(k)] = v
-    for k, v in data.get("temps_total_par_joueur", {}).items():
-        temps_total_par_joueur[k] = v
+    for nom, s in data.get("states", {}).items():
+        if nom in states:
+            for k, v in s.get("connexions_par_joueur", {}).items():
+                states[nom]["connexions_par_joueur"][k] = v
+            for k, v in s.get("connexions_par_heure", {}).items():
+                states[nom]["connexions_par_heure"][int(k)] = v
+            for k, v in s.get("temps_total_par_joueur", {}).items():
+                states[nom]["temps_total_par_joueur"][k] = v
 
-async def get_players():
+async def get_players(host, port):
     try:
-        server = JavaServer(MC_HOST, MC_PORT)
+        server = JavaServer(host, port)
         status = await asyncio.to_thread(server.status)
         if status.players.sample:
             return {p.name for p in status.players.sample}, status.players.online
@@ -84,38 +114,28 @@ def format_duree(secondes):
     else:
         return f"{s}s"
 
-def generer_graphiques():
+def generer_graphiques(nom_serveur):
+    s = states[nom_serveur]
     fichiers = []
-    couleur_principale = "#5865F2"
-    couleur_secondaire = "#3BA55C"
-    couleur_temps = "#FAA61A"
     bg = "#2C2F33"
     bg2 = "#23272A"
     text_color = "#DCDDDE"
-
     plt.rcParams.update({
-        'figure.facecolor': bg,
-        'axes.facecolor': bg2,
-        'axes.edgecolor': '#40444B',
-        'axes.labelcolor': text_color,
-        'xtick.color': text_color,
-        'ytick.color': text_color,
-        'text.color': text_color,
-        'grid.color': '#40444B',
-        'grid.linewidth': 0.5,
+        'figure.facecolor': bg, 'axes.facecolor': bg2,
+        'axes.edgecolor': '#40444B', 'axes.labelcolor': text_color,
+        'xtick.color': text_color, 'ytick.color': text_color,
+        'text.color': text_color, 'grid.color': '#40444B', 'grid.linewidth': 0.5,
     })
 
-    # Graphique 1 : connexions par joueur
-    if connexions_par_joueur:
-        top = sorted(connexions_par_joueur.items(), key=lambda x: x[1], reverse=True)[:10]
+    if s["connexions_par_joueur"]:
+        top = sorted(s["connexions_par_joueur"].items(), key=lambda x: x[1], reverse=True)[:10]
         noms, vals = zip(*top)
         fig, ax = plt.subplots(figsize=(10, 5))
-        bars = ax.barh(noms, vals, color=couleur_principale, height=0.6)
+        bars = ax.barh(noms, vals, color="#5865F2", height=0.6)
         for bar, val in zip(bars, vals):
-            ax.text(bar.get_width() + 0.05, bar.get_y() + bar.get_height()/2,
-                    str(val), va='center', fontsize=11, color=text_color)
+            ax.text(bar.get_width() + 0.05, bar.get_y() + bar.get_height()/2, str(val), va='center', fontsize=11, color=text_color)
         ax.set_xlabel("Connexions")
-        ax.set_title("Connexions par joueur", fontsize=14, fontweight='bold', pad=15)
+        ax.set_title(f"Connexions par joueur — {nom_serveur}", fontsize=14, fontweight='bold', pad=15)
         ax.invert_yaxis()
         ax.grid(axis='x', alpha=0.3)
         ax.spines['top'].set_visible(False)
@@ -127,19 +147,17 @@ def generer_graphiques():
         fichiers.append(("connexions_joueurs.png", buf))
         plt.close()
 
-    # Graphique 2 : temps de jeu par joueur
-    if temps_total_par_joueur:
-        top_temps = sorted(temps_total_par_joueur.items(), key=lambda x: x[1], reverse=True)[:10]
+    if s["temps_total_par_joueur"]:
+        top_temps = sorted(s["temps_total_par_joueur"].items(), key=lambda x: x[1], reverse=True)[:10]
         noms, vals = zip(*top_temps)
         vals_heures = [v / 3600 for v in vals]
         labels = [format_duree(v) for v in vals]
         fig, ax = plt.subplots(figsize=(10, 5))
-        bars = ax.barh(noms, vals_heures, color=couleur_temps, height=0.6)
+        bars = ax.barh(noms, vals_heures, color="#FAA61A", height=0.6)
         for bar, label in zip(bars, labels):
-            ax.text(bar.get_width() + 0.01, bar.get_y() + bar.get_height()/2,
-                    label, va='center', fontsize=11, color=text_color)
+            ax.text(bar.get_width() + 0.01, bar.get_y() + bar.get_height()/2, label, va='center', fontsize=11, color=text_color)
         ax.set_xlabel("Heures de jeu")
-        ax.set_title("Temps de jeu par joueur", fontsize=14, fontweight='bold', pad=15)
+        ax.set_title(f"Temps de jeu — {nom_serveur}", fontsize=14, fontweight='bold', pad=15)
         ax.invert_yaxis()
         ax.grid(axis='x', alpha=0.3)
         ax.spines['top'].set_visible(False)
@@ -151,17 +169,16 @@ def generer_graphiques():
         fichiers.append(("temps_jeu.png", buf))
         plt.close()
 
-    # Graphique 3 : activité par heure
     heures = list(range(24))
-    vals = [connexions_par_heure.get(h, 0) for h in heures]
+    vals = [s["connexions_par_heure"].get(h, 0) for h in heures]
     labels_h = [f"{str(h).zfill(2)}h" for h in heures]
     fig, ax = plt.subplots(figsize=(12, 5))
-    ax.fill_between(heures, vals, alpha=0.3, color=couleur_secondaire)
-    ax.plot(heures, vals, color=couleur_secondaire, linewidth=2.5, marker='o', markersize=5)
+    ax.fill_between(heures, vals, alpha=0.3, color="#3BA55C")
+    ax.plot(heures, vals, color="#3BA55C", linewidth=2.5, marker='o', markersize=5)
     ax.set_xticks(heures)
     ax.set_xticklabels(labels_h, rotation=45, fontsize=9)
     ax.set_ylabel("Connexions")
-    ax.set_title("Activité par heure de la journée", fontsize=14, fontweight='bold', pad=15)
+    ax.set_title(f"Activité par heure — {nom_serveur}", fontsize=14, fontweight='bold', pad=15)
     ax.grid(axis='y', alpha=0.3)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
@@ -171,224 +188,386 @@ def generer_graphiques():
     buf.seek(0)
     fichiers.append(("activite_heures.png", buf))
     plt.close()
-
     return fichiers
 
-async def envoyer_graphiques():
-    channel = client.get_channel(CHANNEL_GRAPHIQUES)
+async def envoyer_graphiques(nom_serveur):
+    channel_id = SERVEURS[nom_serveur]["channels"]["graphiques"]
+    channel = client.get_channel(channel_id)
     if not channel:
         return
-    fichiers = await asyncio.to_thread(generer_graphiques)
-    await channel.send("📊 **Graphiques des statistiques**")
+    fichiers = await asyncio.to_thread(generer_graphiques, nom_serveur)
+    await channel.send(f"📊 **Graphiques — {nom_serveur}**")
     for nom, buf in fichiers:
         await channel.send(file=discord.File(buf, filename=nom))
 
-async def envoyer_stats_quotidiennes():
-    channel_stats = client.get_channel(CHANNEL_STATISTIQUES)
+async def envoyer_stats_quotidiennes(nom_serveur):
+    s = states[nom_serveur]
+    channel_stats = client.get_channel(SERVEURS[nom_serveur]["channels"]["statistiques"])
     if not channel_stats:
         return
-
-    if connexions_par_joueur:
-        top_joueurs = sorted(connexions_par_joueur.items(), key=lambda x: x[1], reverse=True)[:5]
-        top_str = "\n".join(f"**{i+1}.** {p} — {n} connexion(s)" for i, (p, n) in enumerate(top_joueurs))
-    else:
-        top_str = "Aucune donnée"
-
-    if connexions_par_heure:
-        top_heures = sorted(connexions_par_heure.items(), key=lambda x: x[1], reverse=True)[:3]
-        heures_str = "\n".join(f"**{h}h00** — {n} connexion(s)" for h, n in top_heures)
-    else:
-        heures_str = "Aucune donnée"
-
-    if temps_total_par_joueur:
-        top_temps = sorted(temps_total_par_joueur.items(), key=lambda x: x[1], reverse=True)[:5]
-        temps_str = "\n".join(f"**{i+1}.** {p} — {format_duree(t)}" for i, (p, t) in enumerate(top_temps))
-    else:
-        temps_str = "Aucune donnée"
-
-    total = sum(connexions_par_joueur.values())
-
-    embed = discord.Embed(title="Rapport quotidien", color=0x5865F2)
+    top_str = "\n".join(f"**{i+1}.** {p} — {n} connexion(s)" for i, (p, n) in enumerate(sorted(s["connexions_par_joueur"].items(), key=lambda x: x[1], reverse=True)[:5])) or "Aucune donnée"
+    heures_str = "\n".join(f"**{h}h00** — {n} connexion(s)" for h, n in sorted(s["connexions_par_heure"].items(), key=lambda x: x[1], reverse=True)[:3]) or "Aucune donnée"
+    temps_str = "\n".join(f"**{i+1}.** {p} — {format_duree(t)}" for i, (p, t) in enumerate(sorted(s["temps_total_par_joueur"].items(), key=lambda x: x[1], reverse=True)[:5])) or "Aucune donnée"
+    total = sum(s["connexions_par_joueur"].values())
+    embed = discord.Embed(title=f"Rapport quotidien — {nom_serveur}", color=0x5865F2)
     embed.add_field(name="Joueurs les plus actifs", value=top_str, inline=False)
     embed.add_field(name="Temps de jeu total", value=temps_str, inline=False)
     embed.add_field(name="Heures de pointe", value=heures_str, inline=False)
-    embed.add_field(name="Total connexions aujourd'hui", value=f"**{total}** connexion(s)", inline=False)
-
+    embed.add_field(name="Total connexions", value=f"**{total}** connexion(s)", inline=False)
     await channel_stats.send(embed=embed)
-    await envoyer_graphiques()
-
-    connexions_par_joueur.clear()
-    connexions_par_heure.clear()
-    temps_total_par_joueur.clear()
+    await envoyer_graphiques(nom_serveur)
+    s["connexions_par_joueur"].clear()
+    s["connexions_par_heure"].clear()
+    s["temps_total_par_joueur"].clear()
     sauvegarder()
 
-async def monitor_loop():
-    global previously_online, players_this_hour
-    await client.wait_until_ready()
-    last_hour_report = time.time()
-    last_day_report = time.time()
+# ─── MODALS ───────────────────────────────────────────────────────────────────
 
-    channel_alertes = client.get_channel(CHANNEL_ALERTES)
-    channel_rapports = client.get_channel(CHANNEL_RAPPORTS)
+class TrackerModal(discord.ui.Modal, title="Tracker un joueur"):
+    pseudo = discord.ui.TextInput(label="Pseudo du joueur", placeholder="Ex: Notch")
+    serveur = discord.ui.TextInput(label="Serveur", placeholder="cobblemon ou lego974")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        pseudo = self.pseudo.value.strip()
+        nom_serveur = self.serveur.value.strip().lower()
+        if nom_serveur not in SERVEURS:
+            await interaction.response.send_message(f"Serveur inconnu. Disponibles : {', '.join(SERVEURS.keys())}", ephemeral=True)
+            return
+        key = pseudo.lower()
+        if key not in trackers:
+            trackers[key] = []
+        entry = (interaction.user.id, nom_serveur)
+        if entry not in trackers[key]:
+            trackers[key].append(entry)
+        sauvegarder()
+        ch = client.get_channel(SERVEURS[nom_serveur]["channels"]["joueurs_surveilles"])
+        if ch:
+            await ch.send(f"+ **{pseudo}** ajouté par <@{interaction.user.id}>")
+        await interaction.response.send_message(f"Tu seras pingé quand **{pseudo}** se connecte sur **{nom_serveur}** !", ephemeral=True)
+
+class UntrackSelect(discord.ui.Select):
+    def __init__(self, user_id, actifs):
+        options = [
+            discord.SelectOption(label=f"{p} — {s}", value=f"{p}|{s}")
+            for p, s in actifs[:25]
+        ]
+        super().__init__(placeholder="Choisir un tracker à supprimer...", options=options)
+        self.user_id = user_id
+
+    async def callback(self, interaction: discord.Interaction):
+        pseudo, nom_serveur = self.values[0].split("|")
+        key = pseudo.lower()
+        if key in trackers:
+            trackers[key] = [e for e in trackers[key] if not (e[0] == self.user_id and e[1] == nom_serveur)]
+        sauvegarder()
+        await interaction.response.send_message(f"Alerte supprimée pour **{pseudo}** sur **{nom_serveur}**.", ephemeral=True)
+
+class UntrackView(discord.ui.View):
+    def __init__(self, user_id, actifs):
+        super().__init__()
+        self.add_item(UntrackSelect(user_id, actifs))
+
+class ServeurSelect(discord.ui.Select):
+    def __init__(self, action):
+        options = [discord.SelectOption(label=nom, value=nom) for nom in SERVEURS]
+        super().__init__(placeholder="Choisir un serveur...", options=options)
+        self.action = action
+
+    async def callback(self, interaction: discord.Interaction):
+        nom_serveur = self.values[0]
+        if self.action == "rapport":
+            entry = (interaction.user.id, nom_serveur)
+            if entry not in hourly_subscribers:
+                hourly_subscribers.append(entry)
+                sauvegarder()
+                await interaction.response.send_message(f"Rapport horaire activé pour **{nom_serveur}** !", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"Tu es déjà abonné à **{nom_serveur}**.", ephemeral=True)
+        elif self.action == "stoprapport":
+            entry = (interaction.user.id, nom_serveur)
+            if entry in hourly_subscribers:
+                hourly_subscribers.remove(entry)
+                sauvegarder()
+                await interaction.response.send_message(f"Rapport désactivé pour **{nom_serveur}**.", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"Tu n'étais pas abonné à **{nom_serveur}**.", ephemeral=True)
+        elif self.action == "stats":
+            await interaction.response.send_message(f"Envoi des stats pour **{nom_serveur}**...", ephemeral=True)
+            await envoyer_stats_quotidiennes(nom_serveur)
+        elif self.action == "graphique":
+            await interaction.response.send_message(f"Envoi des graphiques pour **{nom_serveur}**...", ephemeral=True)
+            await envoyer_graphiques(nom_serveur)
+
+class ServeurSelectView(discord.ui.View):
+    def __init__(self, action):
+        super().__init__()
+        self.add_item(ServeurSelect(action))
+
+# ─── PANEL ────────────────────────────────────────────────────────────────────
+
+class PanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Tracker un joueur", style=discord.ButtonStyle.primary, emoji="🎯")
+    async def tracker(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(TrackerModal())
+
+    @discord.ui.button(label="Supprimer un tracker", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def untrack(self, interaction: discord.Interaction, button: discord.ui.Button):
+        actifs = [(k, e[1]) for k, v in trackers.items() for e in v if e[0] == interaction.user.id]
+        if not actifs:
+            await interaction.response.send_message("Tu n'as aucun tracker actif.", ephemeral=True)
+            return
+        await interaction.response.send_message("Choisis le tracker à supprimer :", view=UntrackView(interaction.user.id, actifs), ephemeral=True)
+
+    @discord.ui.button(label="Voir les joueurs", style=discord.ButtonStyle.secondary, emoji="👥")
+    async def joueurs(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        msg = ""
+        for nom, cfg in SERVEURS.items():
+            players, count = await get_players(cfg["host"], cfg["port"])
+            if count == 0:
+                msg += f"**{nom}** — Aucun joueur connecté\n"
+            elif not players:
+                msg += f"**{nom}** — {count} joueur(s) (noms masqués)\n"
+            else:
+                s = states[nom]
+                lines = []
+                for p in sorted(players):
+                    if p in s["session_start"]:
+                        duree = time.time() - s["session_start"][p]
+                        lines.append(f"• {p} — depuis {format_duree(duree)}")
+                    else:
+                        lines.append(f"• {p}")
+                msg += f"**{nom}** — {count} joueur(s) :\n" + "\n".join(lines) + "\n\n"
+        await interaction.followup.send(msg.strip(), ephemeral=True)
+
+    @discord.ui.button(label="Activer rapport horaire", style=discord.ButtonStyle.secondary, emoji="📋")
+    async def rapport(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("Choisir le serveur :", view=ServeurSelectView("rapport"), ephemeral=True)
+
+    @discord.ui.button(label="Désactiver rapport", style=discord.ButtonStyle.secondary, emoji="🔕")
+    async def stoprapport(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("Choisir le serveur :", view=ServeurSelectView("stoprapport"), ephemeral=True)
+
+    @discord.ui.button(label="Envoyer les stats", style=discord.ButtonStyle.secondary, emoji="📊")
+    async def stats(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("Choisir le serveur :", view=ServeurSelectView("stats"), ephemeral=True)
+
+    @discord.ui.button(label="Envoyer les graphiques", style=discord.ButtonStyle.secondary, emoji="📈")
+    async def graphique(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("Choisir le serveur :", view=ServeurSelectView("graphique"), ephemeral=True)
+
+    @discord.ui.button(label="Mes trackers actifs", style=discord.ButtonStyle.secondary, emoji="📌")
+    async def mes_trackers(self, interaction: discord.Interaction, button: discord.ui.Button):
+        actifs = [(k, e[1]) for k, v in trackers.items() for e in v if e[0] == interaction.user.id]
+        if actifs:
+            liste = "\n".join(f"• **{p}** sur {s}" for p, s in actifs)
+            await interaction.response.send_message(f"Tes trackers actifs :\n{liste}", ephemeral=True)
+        else:
+            await interaction.response.send_message("Tu n'as aucun tracker actif.", ephemeral=True)
+
+# ─── MONITORING ───────────────────────────────────────────────────────────────
+
+async def monitor_serveur(nom_serveur):
+    cfg = SERVEURS[nom_serveur]
+    s = states[nom_serveur]
+    await client.wait_until_ready()
+    last_hour = time.time()
+    last_day = time.time()
 
     while not client.is_closed():
-        current_players, count = await get_players()
-        new_players = current_players - previously_online
-        left_players = previously_online - current_players
+        current_players, count = await get_players(cfg["host"], cfg["port"])
+        new_players = current_players - s["previously_online"]
+        left_players = s["previously_online"] - current_players
 
-        players_this_hour.update(new_players)
-
+        s["players_this_hour"].update(new_players)
         heure_actuelle = int(time.strftime("%H"))
-        for player in new_players:
-            connexions_par_joueur[player] += 1
-            connexions_par_heure[heure_actuelle] += 1
-            session_start[player] = time.time()
-            sauvegarder()
+        channel_alertes = client.get_channel(cfg["channels"]["alertes"])
 
+        for player in new_players:
+            s["connexions_par_joueur"][player] += 1
+            s["connexions_par_heure"][heure_actuelle] += 1
+            s["session_start"][player] = time.time()
+            sauvegarder()
             for key, entries in trackers.items():
                 if player.lower() == key:
-                    for (user_id, _) in entries:
-                        if channel_alertes:
+                    for (user_id, serveur_tracker) in entries:
+                        if serveur_tracker == nom_serveur and channel_alertes:
                             await channel_alertes.send(
-                                f"<@{user_id}> **{player}** vient de se connecter ! "
-                                f"({count} joueur(s) en ligne)"
+                                f"<@{user_id}> **{player}** vient de se connecter sur **{nom_serveur}** ! ({count} joueur(s) en ligne)"
                             )
 
         for player in left_players:
-            if player in session_start:
-                duree = time.time() - session_start[player]
-                temps_total_par_joueur[player] += duree
-                del session_start[player]
+            if player in s["session_start"]:
+                duree = time.time() - s["session_start"][player]
+                s["temps_total_par_joueur"][player] += duree
+                del s["session_start"][player]
                 sauvegarder()
                 if channel_alertes:
-                    await channel_alertes.send(
-                        f"**{player}** a quitté le serveur — session : **{format_duree(duree)}**"
-                    )
+                    await channel_alertes.send(f"**{player}** a quitté **{nom_serveur}** — session : **{format_duree(duree)}**")
 
-        previously_online = current_players
+        s["previously_online"] = current_players
 
-        if time.time() - last_hour_report >= 3600:
-            last_hour_report = time.time()
-            nb = len(players_this_hour)
-            liste = ", ".join(f"**{p}**" for p in sorted(players_this_hour)) if players_this_hour else "aucun"
-            for (user_id, _) in hourly_subscribers:
-                if channel_rapports:
+        if time.time() - last_hour >= 3600:
+            last_hour = time.time()
+            nb = len(s["players_this_hour"])
+            liste = ", ".join(f"**{p}**" for p in sorted(s["players_this_hour"])) if s["players_this_hour"] else "aucun"
+            channel_rapports = client.get_channel(cfg["channels"]["rapports"])
+            for (user_id, serveur_tracker) in hourly_subscribers:
+                if serveur_tracker == nom_serveur and channel_rapports:
                     await channel_rapports.send(
-                        f"<@{user_id}> Rapport horaire : **{nb}** joueur(s) connecté(s) cette heure → {liste}"
+                        f"<@{user_id}> Rapport horaire **{nom_serveur}** : **{nb}** joueur(s) → {liste}"
                     )
-            players_this_hour = set()
+            s["players_this_hour"] = set()
 
-        if time.time() - last_day_report >= 86400:
-            last_day_report = time.time()
-            await envoyer_stats_quotidiennes()
+        if time.time() - last_day >= 86400:
+            last_day = time.time()
+            await envoyer_stats_quotidiennes(nom_serveur)
 
         await asyncio.sleep(30)
+
+# ─── EVENTS ───────────────────────────────────────────────────────────────────
 
 @client.event
 async def on_ready():
     charger()
     print(f"Bot connecté : {client.user}")
-    client.loop.create_task(monitor_loop())
+    for nom in SERVEURS:
+        client.loop.create_task(monitor_serveur(nom))
 
 @client.event
 async def on_message(message):
     if message.author.bot:
         return
-
     if message.channel.id != CHANNEL_COMMANDES:
         return
 
     content = message.content.strip()
     channel_commandes = client.get_channel(CHANNEL_COMMANDES)
-    channel_joueurs = client.get_channel(CHANNEL_JOUEURS_SURVEILLES)
 
-    if content == "!joueurs":
-        players, count = await get_players()
-        if count == 0:
-            await channel_commandes.send("Aucun joueur connecté (ou serveur hors ligne).")
-        elif not players:
-            await channel_commandes.send(f"**{count}** joueur(s) en ligne (noms masqués par le serveur).")
-        else:
-            lines = []
-            for p in sorted(players):
-                if p in session_start:
-                    duree = time.time() - session_start[p]
-                    lines.append(f"• {p} — connecté depuis **{format_duree(duree)}**")
-                else:
-                    lines.append(f"• {p}")
-            await channel_commandes.send(f"**{count}** joueur(s) en ligne :\n" + "\n".join(lines))
-
-    elif content.startswith("!tracker "):
-        pseudo = content[9:].strip()
-        if not pseudo:
-            await channel_commandes.send("Usage : `!tracker <pseudo>`")
-            return
-        key = pseudo.lower()
-        if key not in trackers:
-            trackers[key] = []
-        entry = (message.author.id, message.channel.id)
-        if entry not in trackers[key]:
-            trackers[key].append(entry)
-        sauvegarder()
-        await channel_commandes.send(f"Tu seras pingé quand **{pseudo}** se connecte.")
-        if channel_joueurs:
-            await channel_joueurs.send(f"+ **{pseudo}** ajouté au tracking par <@{message.author.id}>")
-
-    elif content.startswith("!untrack "):
-        pseudo = content[9:].strip()
-        key = pseudo.lower()
-        if key in trackers:
-            trackers[key] = [e for e in trackers[key] if e[0] != message.author.id]
-        sauvegarder()
-        await channel_commandes.send(f"Alerte désactivée pour **{pseudo}**.")
-        if channel_joueurs:
-            await channel_joueurs.send(f"- **{pseudo}** retiré du tracking par <@{message.author.id}>")
-
-    elif content == "!trackers":
-        actifs = [k for k, v in trackers.items() if any(e[0] == message.author.id for e in v)]
-        if actifs:
-            await channel_commandes.send("Tes alertes actives : " + ", ".join(f"**{p}**" for p in actifs))
-        else:
-            await channel_commandes.send("Tu n'as aucune alerte active.")
-
-    elif content == "!rapport":
-        entry = (message.author.id, message.channel.id)
-        if entry not in hourly_subscribers:
-            hourly_subscribers.append(entry)
-            sauvegarder()
-            await channel_commandes.send("Tu recevras un rapport toutes les heures dans #rapports.")
-        else:
-            await channel_commandes.send("Tu es déjà abonné au rapport horaire.")
-
-    elif content == "!stoprapport":
-        entry = (message.author.id, message.channel.id)
-        if entry in hourly_subscribers:
-            hourly_subscribers.remove(entry)
-            sauvegarder()
-            await channel_commandes.send("Rapport horaire désactivé.")
-        else:
-            await channel_commandes.send("Tu n'étais pas abonné.")
-
-    elif content == "!stats":
-        await envoyer_stats_quotidiennes()
-        await channel_commandes.send("Stats envoyées dans #statistiques !")
-
-    elif content == "!graphique":
-        await envoyer_graphiques()
-        await channel_commandes.send("Graphiques envoyés dans #graphiques !")
+    if content == "!panel":
+        embed = discord.Embed(
+            title="Panel de contrôle",
+            description="Utilise les boutons ci-dessous pour contrôler le bot.",
+            color=0x5865F2
+        )
+        embed.add_field(name="Serveurs surveillés", value="\n".join(f"• **{nom}**" for nom in SERVEURS), inline=False)
+        await channel_commandes.send(embed=embed, view=PanelView())
 
     elif content == "!aide":
         aide = (
             "**Commandes disponibles :**\n"
-            "`!joueurs` → voir qui est connecté + depuis combien de temps\n"
-            "`!tracker <pseudo>` → être pingé quand ce joueur se connecte\n"
-            "`!untrack <pseudo>` → arrêter de suivre ce joueur\n"
+            "`!panel` → ouvrir le panel interactif\n"
+            "`!joueurs` → voir qui est connecté\n"
+            "`!tracker <pseudo> <serveur>` → tracker un joueur\n"
+            "`!untrack <pseudo> <serveur>` → arrêter de suivre\n"
             "`!trackers` → voir tes alertes actives\n"
-            "`!rapport` → activer le rapport horaire\n"
-            "`!stoprapport` → désactiver le rapport horaire\n"
-            "`!stats` → envoyer le rapport quotidien dans #statistiques\n"
-            "`!graphique` → envoyer les graphiques dans #graphiques"
+            "`!rapport <serveur>` → activer le rapport horaire\n"
+            "`!stoprapport <serveur>` → désactiver le rapport\n"
+            "`!stats <serveur>` → envoyer les stats\n"
+            "`!graphique <serveur>` → envoyer les graphiques\n\n"
+            f"Serveurs : {', '.join(SERVEURS.keys())}"
         )
         await channel_commandes.send(aide)
+
+    elif content == "!joueurs":
+        for nom, cfg in SERVEURS.items():
+            players, count = await get_players(cfg["host"], cfg["port"])
+            if count == 0:
+                await channel_commandes.send(f"**{nom}** — Aucun joueur connecté.")
+            elif not players:
+                await channel_commandes.send(f"**{nom}** — {count} joueur(s) en ligne (noms masqués).")
+            else:
+                s = states[nom]
+                lines = []
+                for p in sorted(players):
+                    if p in s["session_start"]:
+                        duree = time.time() - s["session_start"][p]
+                        lines.append(f"• {p} — depuis **{format_duree(duree)}**")
+                    else:
+                        lines.append(f"• {p}")
+                await channel_commandes.send(f"**{nom}** — {count} joueur(s) :\n" + "\n".join(lines))
+
+    elif content.startswith("!tracker "):
+        parts = content[9:].strip().split(" ")
+        if len(parts) < 2:
+            await channel_commandes.send("Usage : `!tracker <pseudo> <serveur>`")
+            return
+        pseudo, nom_serveur = parts[0], parts[1].lower()
+        if nom_serveur not in SERVEURS:
+            await channel_commandes.send(f"Serveur inconnu. Disponibles : {', '.join(SERVEURS.keys())}")
+            return
+        key = pseudo.lower()
+        if key not in trackers:
+            trackers[key] = []
+        entry = (message.author.id, nom_serveur)
+        if entry not in trackers[key]:
+            trackers[key].append(entry)
+        sauvegarder()
+        await channel_commandes.send(f"Tu seras pingé quand **{pseudo}** se connecte sur **{nom_serveur}**.")
+        ch = client.get_channel(SERVEURS[nom_serveur]["channels"]["joueurs_surveilles"])
+        if ch:
+            await ch.send(f"+ **{pseudo}** ajouté par <@{message.author.id}>")
+
+    elif content.startswith("!untrack "):
+        parts = content[9:].strip().split(" ")
+        if len(parts) < 2:
+            await channel_commandes.send("Usage : `!untrack <pseudo> <serveur>`")
+            return
+        pseudo, nom_serveur = parts[0], parts[1].lower()
+        key = pseudo.lower()
+        if key in trackers:
+            trackers[key] = [e for e in trackers[key] if not (e[0] == message.author.id and e[1] == nom_serveur)]
+        sauvegarder()
+        await channel_commandes.send(f"Alerte désactivée pour **{pseudo}** sur **{nom_serveur}**.")
+
+    elif content == "!trackers":
+        actifs = [(k, e[1]) for k, v in trackers.items() for e in v if e[0] == message.author.id]
+        if actifs:
+            liste = "\n".join(f"• **{p}** sur {s}" for p, s in actifs)
+            await channel_commandes.send(f"Tes alertes actives :\n{liste}")
+        else:
+            await channel_commandes.send("Tu n'as aucune alerte active.")
+
+    elif content.startswith("!rapport "):
+        nom_serveur = content[9:].strip().lower()
+        if nom_serveur not in SERVEURS:
+            await channel_commandes.send(f"Serveur inconnu. Disponibles : {', '.join(SERVEURS.keys())}")
+            return
+        entry = (message.author.id, nom_serveur)
+        if entry not in hourly_subscribers:
+            hourly_subscribers.append(entry)
+            sauvegarder()
+            await channel_commandes.send(f"Rapport horaire activé pour **{nom_serveur}**.")
+        else:
+            await channel_commandes.send("Tu es déjà abonné.")
+
+    elif content.startswith("!stoprapport "):
+        nom_serveur = content[13:].strip().lower()
+        entry = (message.author.id, nom_serveur)
+        if entry in hourly_subscribers:
+            hourly_subscribers.remove(entry)
+            sauvegarder()
+            await channel_commandes.send(f"Rapport désactivé pour **{nom_serveur}**.")
+        else:
+            await channel_commandes.send("Tu n'étais pas abonné.")
+
+    elif content.startswith("!stats "):
+        nom_serveur = content[7:].strip().lower()
+        if nom_serveur not in SERVEURS:
+            await channel_commandes.send(f"Serveur inconnu. Disponibles : {', '.join(SERVEURS.keys())}")
+            return
+        await envoyer_stats_quotidiennes(nom_serveur)
+        await channel_commandes.send(f"Stats envoyées pour **{nom_serveur}** !")
+
+    elif content.startswith("!graphique "):
+        nom_serveur = content[11:].strip().lower()
+        if nom_serveur not in SERVEURS:
+            await channel_commandes.send(f"Serveur inconnu. Disponibles : {', '.join(SERVEURS.keys())}")
+            return
+        await envoyer_graphiques(nom_serveur)
+        await channel_commandes.send(f"Graphiques envoyés pour **{nom_serveur}** !")
 
 client.run(TOKEN)
